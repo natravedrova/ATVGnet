@@ -50,7 +50,9 @@ def parse_args():
     parser.add_argument('-d','--data_path', type=str, default='../basics')
     parser.add_argument('-p','--person', type=str, default='../image/musk1.jpg')
     parser.add_argument('--device_ids', type=str, default='2')
-    parser.add_argument('--num_thread', type=int, default=1)   
+    parser.add_argument('--num_thread', type=int, default=1)
+    parser.add_argument('--faceid', type=int, default=0)
+    parser.add_argument('--headonly', type=int, default=0)
     return parser.parse_args()
 config = parse_args()
 
@@ -99,7 +101,41 @@ def normLmarks(lmarks):
         predicted = np.dot(params, SK)[0, :, :] + MSK
         pred_seq.append(predicted[0, :])
     return np.array(pred_seq), np.array(norm_list), 1
-   
+    
+def getImageInfo(image_path):
+    image= cv2.imread(image_path)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    rects = detector(gray, 1)
+    #for (i, rect) in enumerate(rects):
+    #(x, y, w, h) = utils.rect_to_bb(rect)
+    return image,rects[config.faceid]
+        
+def restore_image(orgImage,rect, img):
+    (x, y, w, h) = utils.rect_to_bb(rect)
+    cv2.normalize(img, img, 0, 255, cv2.NORM_MINMAX)
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    rgb = cv2.resize(img,(w,h),interpolation=cv2.INTER_CUBIC)
+    orgImage[y:y + h, x:x+w]=rgb
+    return orgImage
+ 
+def crop_image2(image,rect):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    shape = predictor(gray, rect)
+    shape = utils.shape_to_np(shape)
+    (x, y, w, h) = utils.rect_to_bb(rect)
+    center_x = x + int(0.5 * w)
+    center_y = y + int(0.5 * h)
+    r = int(0.64 * h)
+    new_x = center_x - r
+    new_y = center_y - r
+    roi = image[new_y:new_y + 2 * r, new_x:new_x + 2 * r]
+    roi = cv2.resize(roi, (163,163), interpolation = cv2.INTER_AREA)
+    scale =  163. / (2 * r)
+
+    shape = ((shape - np.array([new_x,new_y])) * scale)
+
+    return roi, shape 
+
 def crop_image(image_path):
     image = cv2.imread(image_path)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -114,18 +150,19 @@ def crop_image(image_path):
         new_x = center_x - r
         new_y = center_y - r
         roi = image[new_y:new_y + 2 * r, new_x:new_x + 2 * r]
-
         roi = cv2.resize(roi, (163,163), interpolation = cv2.INTER_AREA)
+
         scale =  163. / (2 * r)
 
         shape = ((shape - np.array([new_x,new_y])) * scale)
 
         return roi, shape 
-def generator_demo_example_lips(img_path):
+def generator_demo_example_lips(img_path,image,rect):
     name = img_path.split('/')[-1]
     landmark_path = os.path.join('../image/', name.replace('jpg', 'npy')) 
     region_path = os.path.join('../image/', name.replace('.jpg', '_region.jpg')) 
-    roi, landmark= crop_image(img_path)
+    roi, landmark= crop_image2(image,rect)
+
     if  np.sum(landmark[37:39,1] - landmark[40:42,1]) < -9:
 
         # pts2 = np.float32(np.array([template[36],template[45],template[30]]))
@@ -134,9 +171,11 @@ def generator_demo_example_lips(img_path):
         template = np.load( '../basics/base_68_close.npy')
     # pts2 = np.float32(np.vstack((template[27:36,:], template[39,:],template[42,:],template[45,:])))
     pts2 = np.float32(template[27:45,:])
+    #pts2 = np.float32(template[0:0,:])
     # pts2 = np.float32(template[17:35,:])
     # pts1 = np.vstack((landmark[27:36,:], landmark[39,:],landmark[42,:],landmark[45,:]))
     pts1 = np.float32(landmark[27:45,:])
+    #pts1 = np.float32(landmark[0:0,:])
     # pts1 = np.float32(landmark[17:35,:])
     tform = tf.SimilarityTransform()
     tform.estimate( pts2, pts1)
@@ -166,10 +205,13 @@ def test():
     os.environ["CUDA_VISIBLE_DEVICES"] = config.device_ids
     if os.path.exists('../temp'):
         shutil.rmtree('../temp')
-    os.mkdir('../temp')
-    os.mkdir('../temp/img')
-    os.mkdir('../temp/motion')
-    os.mkdir('../temp/attention')
+    try:
+        os.mkdir('../temp')
+        os.mkdir('../temp/img')
+        os.mkdir('../temp/motion')
+        os.mkdir('../temp/attention')
+    except:
+        print ('already have dir')
     pca = torch.FloatTensor( np.load('../basics/U_lrw1.npy')[:,:6]).cuda()
     mean =torch.FloatTensor( np.load('../basics/mean_lrw1.npy')).cuda()
     decoder = VG_net()
@@ -189,7 +231,9 @@ def test():
     decoder.eval()
     test_file = config.in_file
 
-    example_image, example_landmark = generator_demo_example_lips( config.person)
+    orgImage, rect = getImageInfo(config.person)
+    example_image, example_landmark = generator_demo_example_lips( config.person,orgImage,rect)
+    
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
@@ -239,7 +283,6 @@ def test():
         fake_lmark = torch.mm( fake_lmark, pca.t() )
         fake_lmark = fake_lmark + mean.expand_as(fake_lmark)
     
-
         fake_lmark = fake_lmark.unsqueeze(0) 
 
         fake_ims, atts ,ms ,_ = decoder(example_image, fake_lmark, example_landmark )
@@ -247,7 +290,11 @@ def test():
         for indx in range(fake_ims.size(1)):
             fake_im = fake_ims[:,indx]
             fake_store = fake_im.permute(0,2,3,1).data.cpu().numpy()[0]
-            scipy.misc.imsave("{}/{:05d}.png".format(os.path.join('../', 'temp', 'img') ,indx ), fake_store)
+            if not config.headonly:
+                fake_store = restore_image(orgImage,rect,fake_store)
+                cv2.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'img') ,indx ), fake_store)
+            else:
+                scipy.misc.imsave("{}/{:05d}.png".format(os.path.join('../', 'temp', 'img') ,indx ), fake_store)
             m = ms[:,indx]
             att = atts[:,indx]
             m = m.permute(0,2,3,1).data.cpu().numpy()[0]
@@ -258,15 +305,15 @@ def test():
 
         print ( 'In total, generate {:d} images, cost time: {:03f} seconds'.format(fake_ims.size(1), time.time() - t) )
             
-        fake_lmark = fake_lmark.data.cpu().numpy()
-        np.save( os.path.join( config.sample_dir,  'obama_fake.npy'), fake_lmark)
-        fake_lmark = np.reshape(fake_lmark, (fake_lmark.shape[1], 68, 2))
-        utils.write_video_wpts_wsound(fake_lmark, sound, 44100, config.sample_dir, 'fake', [-1.0, 1.0], [-1.0, 1.0])
+        #fake_lmark = fake_lmark.data.cpu().numpy()
+        #np.save( os.path.join( config.sample_dir,  'obama_fake.npy'), fake_lmark)
+        #fake_lmark = np.reshape(fake_lmark, (fake_lmark.shape[1], 68, 2))
+        #utils.write_video_wpts_wsound(fake_lmark, sound, 44100, config.sample_dir, 'fake', [-1.0, 1.0], [-1.0, 1.0])
         video_name = os.path.join(config.sample_dir , 'results.mp4')
         utils.image_to_video(os.path.join('../', 'temp', 'img'), video_name )
         utils.add_audio(video_name, config.in_file)
-        print ('The generated video is: {}'.format(os.path.join(config.sample_dir , 'results.mov')))
-        
+        print ('The generated video is: {}'.format(os.path.join(config.sample_dir , 'results_a.mp4')))
+        #shutil.rmtree('../temp')
 
 test()
 
