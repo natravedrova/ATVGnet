@@ -53,12 +53,10 @@ def parse_args():
     parser.add_argument('--num_thread', type=int, default=1)
     parser.add_argument('--faceid', type=int, default=0)
     parser.add_argument('--headonly', type=int, default=0)
+    parser.add_argument('--seq', type=int, default=0)
     return parser.parse_args()
 config = parse_args()
 
-
-detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor('../basics/shape_predictor_68_face_landmarks.dat')
 ms_img = np.load('../basics/mean_shape_img.npy')
 ms_norm = np.load('../basics/mean_shape_norm.npy')
 S = np.load('../basics/S.npy')
@@ -82,27 +80,36 @@ ALIGN_POINTS = (LEFT_BROW_POINTS + RIGHT_EYE_POINTS + LEFT_EYE_POINTS +
                                # Points from the second image to overlay on the first. The convex hull of each
 # element will be overlaid.
 OVERLAY_POINTS = [
-    LEFT_EYE_POINTS + RIGHT_EYE_POINTS + LEFT_BROW_POINTS + RIGHT_BROW_POINTS,
     NOSE_POINTS + MOUTH_POINTS,
 ]
 COLOUR_CORRECT_BLUR_FRAC = 0.6
 SCALE_FACTOR = 1 
 FEATHER_AMOUNT = 11
-def get_landmarks(im):
+
+PREV_FACE_RECT=[0,0]
+FACE_DIST = 20
+def get_landmarks(im,org_rect,id):
     #gray = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
-    rects = detector(im, 1)
-    rect=rects[0]
+    global PREV_FACE_RECT
+    im = cv2.resize(im, (im.shape[1] * SCALE_FACTOR,im.shape[0] * SCALE_FACTOR))
+    gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+    rects = detector(gray, 2)
+    if id==0 and PREV_FACE_RECT==[0,0] :
+        PREV_FACE_RECT=[[p.x, p.y] for p in predictor(im, org_rect).parts()][0]
     if len(rects) > 1:
-        #raise TooManyFaces
-        rect=rects[1]
+        print('more than 1 face detected! %s' % len(rects))
     if len(rects) == 0:
         raise NoFaces
-    return np.matrix([[p.x, p.y] for p in predictor(im, rect).parts()])
-    
-def read_im_and_landmarks(im):
-    im = cv2.resize(im, (im.shape[1] * SCALE_FACTOR,im.shape[0] * SCALE_FACTOR))
-    s = get_landmarks(im)
-    return im, s
+    for idx,rect in enumerate(rects):
+        ldmark=[[p.x, p.y] for p in predictor(im, rect).parts()]
+        if id==0:
+            xx=[PREV_FACE_RECT[0]-ldmark[0][0],PREV_FACE_RECT[1]-ldmark[0][1]]
+            dist=np.linalg.norm(xx)
+            if dist>FACE_DIST:
+                print('rects too far %s' % dist)
+                continue
+            PREV_FACE_RECT=ldmark[0]
+        return im,np.matrix(ldmark)
 
 def transformation_from_points(points1, points2):
     """
@@ -162,12 +169,9 @@ def get_face_mask(im, landmarks):
         draw_convex_hull(im,
                          landmarks[group],
                          color=1)
-
     im = np.array([im, im, im]).transpose((1, 2, 0))
-
     im = (cv2.GaussianBlur(im, (FEATHER_AMOUNT, FEATHER_AMOUNT), 0) > 0) * 1.0
     im = cv2.GaussianBlur(im, (FEATHER_AMOUNT, FEATHER_AMOUNT), 0)
-
     return im
 def correct_colours(im1, im2, landmarks1):
     blur_amount = COLOUR_CORRECT_BLUR_FRAC * np.linalg.norm(
@@ -184,24 +188,25 @@ def correct_colours(im1, im2, landmarks1):
 
     return (im2.astype(np.float64) * im1_blur.astype(np.float64) /
                                                 im2_blur.astype(np.float64))
-def restore_image(orgImage,rect, img):
+def restore_image(orgImage,rect, img , idx):
     #(x, y, w, h) = utils.rect_to_bb(rect)
     cv2.normalize(img, img, 0, 255, cv2.NORM_MINMAX)
     #img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     #rgb = cv2.resize(img,(w,h),interpolation=cv2.INTER_CUBIC)
     #orgImage[y:y + h, x:x+w]=rgb
-
-    im1, landmarks1 = read_im_and_landmarks(orgImage)
-    img = img.astype('uint8')
-    im2, landmarks2 = read_im_and_landmarks(img)
+    im1, landmarks1 = get_landmarks(orgImage,rect,0)
+    ovimg = img.astype('uint8')
+    im2, landmarks2 = get_landmarks(ovimg,rect,1)
 
     M = transformation_from_points(landmarks1[ALIGN_POINTS],landmarks2[ALIGN_POINTS])
     mask = get_face_mask(im2, landmarks2)
     warped_mask = warp_im(mask, M, im1.shape)
+
     combined_mask = np.max([get_face_mask(im1, landmarks1), warped_mask],axis=0)
     warped_im2 = warp_im(im2, M, im1.shape)
+    out=get_face_mask(im1, landmarks1)*255+im1
+    cv2.imwrite("../temp/mask/maskr_{:04d}.png".format(idx),out)
     warped_corrected_im2 = correct_colours(im1, warped_im2, landmarks1)
-
     output_im = im1 * (1.0 - combined_mask) + warped_corrected_im2 * combined_mask
     return output_im
 #...........................................
@@ -244,6 +249,7 @@ def normLmarks(lmarks):
     return np.array(pred_seq), np.array(norm_list), 1
     
 def getImageInfo(image_path):
+    print(image_path)
     image= cv2.imread(image_path)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     rects = detector(gray, 1)
@@ -292,8 +298,9 @@ def crop_image(image_path):
         return roi, shape 
 def generator_demo_example_lips(img_path,image,rect):
     name = img_path.split('/')[-1]
-    landmark_path = os.path.join('../image/', name.replace('jpg', 'npy')) 
-    region_path = os.path.join('../image/', name.replace('.jpg', '_region.jpg')) 
+    name = name.split('.')[-1]
+    landmark_path = os.path.join('../image/', name+'.npy') 
+    region_path = os.path.join('../image/', name+ '_region.jpg') 
     roi, landmark= crop_image2(image,rect)
 
     if  np.sum(landmark[37:39,1] - landmark[40:42,1]) < -9:
@@ -318,31 +325,35 @@ def generator_demo_example_lips(img_path,image,rect):
     dst = dst[1:129,1:129,:]
     cv2.imwrite(region_path, dst)
 
-
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
 
     # detect faces in the grayscale image
-    rects = detector(gray, 1)
-    for (i, rect) in enumerate(rects):
-
-        shape = predictor(gray, rect)
-        shape = utils.shape_to_np(shape)
-        shape, _ ,_ = normLmarks(shape)
-        np.save(landmark_path, shape)
-        lmark= shape.reshape(68,2)
-        name = region_path.replace('region.jpg','lmark.png')
-
-        utils.plot_flmarks(lmark, name, (-0.2, 0.2), (-0.2, 0.2), 'x', 'y', figsize=(10, 10))
+    #rects = detector(gray, 1)
+    shape = predictor(gray, rect)
+    shape = utils.shape_to_np(shape)
+    shape, _ ,_ = normLmarks(shape)
+    np.save(landmark_path, shape)
+    lmark= shape.reshape(68,2)
+    name = region_path.replace('region.jpg','lmark.png')
+    
+    utils.plot_flmarks(lmark, name, (-0.2, 0.2), (-0.2, 0.2), 'x', 'y', figsize=(10, 10))
     return dst, lmark
 def test():
     os.environ["CUDA_VISIBLE_DEVICES"] = config.device_ids
     if os.path.exists('../temp'):
-        shutil.rmtree('../temp')
+        try:
+            shutil.rmtree('../temp')
+            while os.path.exists('../temp'):
+                time.sleep(1)
+        except:
+            while os.path.exists('../temp'):
+                time.sleep(1)
     try:
         os.mkdir('../temp')
         os.mkdir('../temp/img')
         os.mkdir('../temp/motion')
         os.mkdir('../temp/attention')
+        os.mkdir('../temp/mask')
     except:
         print ('already have dir')
     pca = torch.FloatTensor( np.load('../basics/U_lrw1.npy')[:,:6]).cuda()
@@ -363,9 +374,11 @@ def test():
     encoder.eval()
     decoder.eval()
     test_file = config.in_file
-
-    orgImage, rect = getImageInfo(config.person)
-    example_image, example_landmark = generator_demo_example_lips( config.person,orgImage,rect)
+    orgPath=config.person
+    if config.seq:
+        orgPath = config.person.format(0)
+    orgImage, rect = getImageInfo(orgPath)
+    example_image, example_landmark = generator_demo_example_lips( orgPath,orgImage,rect)
     
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -373,9 +386,7 @@ def test():
      ])        
     example_image = cv2.cvtColor(example_image, cv2.COLOR_BGR2RGB)
     example_image = transform(example_image)
-
     example_landmark =  example_landmark.reshape((1,example_landmark.shape[0]* example_landmark.shape[1]))
-
     if config.cuda:
         example_image = Variable(example_image.view(1,3,128,128)).cuda()
         example_landmark = Variable(torch.FloatTensor(example_landmark.astype(float)) ).cuda()
@@ -419,12 +430,29 @@ def test():
         fake_lmark = fake_lmark.unsqueeze(0) 
 
         fake_ims, atts ,ms ,_ = decoder(example_image, fake_lmark, example_landmark )
-
+        
+        fake_lmark = fake_lmark.data.cpu().numpy()
+        #np.save( os.path.join( config.sample_dir,  'obama_fake.npy'), fake_lmark)
+        fake_lmark = np.reshape(fake_lmark, (fake_lmark.shape[1], 68, 2))
+        #utils.write_video_wpts_wsound(fake_lmark, sound, 44100, config.sample_dir, 'fake', [-1.0, 1.0], [-1.0, 1.0])
+        imgIdx=0
+        imgDir=1
         for indx in range(fake_ims.size(1)):
             fake_im = fake_ims[:,indx]
             fake_store = fake_im.permute(0,2,3,1).data.cpu().numpy()[0]
             if not config.headonly:
-                fake_store = restore_image(orgImage,rect,fake_store)
+                if config.seq:
+                    seqPath=config.person.format(imgIdx)
+                    if not os.path.exists(seqPath):
+                        imgDir=-imgDir
+                        imgIdx+=imgDir
+                        seqPath=config.person.format(imgIdx)
+                    print(seqPath)
+                    newImage=cv2.imread(seqPath)
+                    imgIdx+=imgDir
+                    fake_store = restore_image(newImage,rect,fake_store,indx)
+                else:
+                    fake_store = restore_image(orgImage,rect,fake_store,indx)
                 cv2.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'img') ,indx ), fake_store)
             else:
                 scipy.misc.imsave("{}/{:05d}.png".format(os.path.join('../', 'temp', 'img') ,indx ), fake_store)
@@ -438,10 +466,7 @@ def test():
 
         print ( 'In total, generate {:d} images, cost time: {:03f} seconds'.format(fake_ims.size(1), time.time() - t) )
             
-        #fake_lmark = fake_lmark.data.cpu().numpy()
-        #np.save( os.path.join( config.sample_dir,  'obama_fake.npy'), fake_lmark)
-        #fake_lmark = np.reshape(fake_lmark, (fake_lmark.shape[1], 68, 2))
-        #utils.write_video_wpts_wsound(fake_lmark, sound, 44100, config.sample_dir, 'fake', [-1.0, 1.0], [-1.0, 1.0])
+        
         video_name = os.path.join(config.sample_dir , 'results.mp4')
         utils.image_to_video(os.path.join('../', 'temp', 'img'), video_name )
         utils.add_audio(video_name, config.in_file)
