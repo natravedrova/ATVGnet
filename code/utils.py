@@ -46,8 +46,6 @@ other = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], \
 
 faceLmarkLookup = Mouth + Nose + leftBrow + rightBrow + leftEye + rightEye + other
 
-detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor('../basics/shape_predictor_68_face_landmarks.dat')
 ms_img = np.load('../basics/mean_shape_img.npy')
 ms_norm = np.load('../basics/mean_shape_norm.npy')
 S = np.load('../basics/S.npy')

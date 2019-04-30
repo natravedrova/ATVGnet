@@ -63,7 +63,8 @@ S = np.load('../basics/S.npy')
 
 MSK = np.reshape(ms_norm, [1, 68*2])
 SK = np.reshape(S, [1, S.shape[0], 68*2])
-
+detector = dlib.get_frontal_face_detector()
+predictor = dlib.shape_predictor('../basics/shape_predictor_68_face_landmarks.dat')
 #...........................................
 #...........................................
 FACE_POINTS = list(range(17, 68))
@@ -91,9 +92,9 @@ FACE_DIST = 20
 def get_landmarks(im,org_rect,id):
     #gray = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
     global PREV_FACE_RECT
-    im = cv2.resize(im, (im.shape[1] * SCALE_FACTOR,im.shape[0] * SCALE_FACTOR))
+    #im = cv2.resize(im, (im.shape[1] * SCALE_FACTOR,im.shape[0] * SCALE_FACTOR))
     gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-    rects = detector(gray, 2)
+    rects = detector(gray, 1)
     if id==0 and PREV_FACE_RECT==[0,0] :
         PREV_FACE_RECT=[[p.x, p.y] for p in predictor(im, org_rect).parts()][0]
     if len(rects) > 1:
@@ -197,13 +198,13 @@ def restore_image(orgImage,rect, img , idx):
     im1, landmarks1 = get_landmarks(orgImage,rect,0)
     ovimg = img.astype('uint8')
     im2, landmarks2 = get_landmarks(ovimg,rect,1)
-
     M = transformation_from_points(landmarks1[ALIGN_POINTS],landmarks2[ALIGN_POINTS])
     mask = get_face_mask(im2, landmarks2)
     warped_mask = warp_im(mask, M, im1.shape)
 
     combined_mask = np.max([get_face_mask(im1, landmarks1), warped_mask],axis=0)
     warped_im2 = warp_im(im2, M, im1.shape)
+    print(landmarks1)
     out=get_face_mask(im1, landmarks1)*255+im1
     cv2.imwrite("../temp/mask/maskr_{:04d}.png".format(idx),out)
     warped_corrected_im2 = correct_colours(im1, warped_im2, landmarks1)
@@ -253,6 +254,7 @@ def getImageInfo(image_path):
     image= cv2.imread(image_path)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     rects = detector(gray, 1)
+    print('%s face detected!' % len(rects))
     #for (i, rect) in enumerate(rects):
     #(x, y, w, h) = utils.rect_to_bb(rect)
     return image,rects[config.faceid]
@@ -323,6 +325,7 @@ def generator_demo_example_lips(img_path,image,rect):
 
     dst = np.array(dst * 255, dtype=np.uint8)
     dst = dst[1:129,1:129,:]
+    #dst = cv2.resize(dst, (128,128))
     cv2.imwrite(region_path, dst)
 
     gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
