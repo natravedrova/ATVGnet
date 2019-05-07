@@ -9,14 +9,29 @@ import math
 import os.path as osp
 import pickle
 import time
-detector = dlib.get_frontal_face_detector()
+
+#faceswap
+import faceswap
+from faceswap3d import FaceRendering , ImageProcessing , drawing
+#3DDFA libraries
+from ddfalib.lighting import RenderPipeline
+import scipy.io as sio
+from math import cos, sin, atan2, asin, sqrt
+#try mobilenet v2
+from ddfalib.face_detect_interface import FaceDetector, box_transform
+#try mtcnn
+from mtcnn.mtcnn import MTCNN
+
+detector1 = dlib.get_frontal_face_detector()
+detector2 = FaceDetector()
+detector = MTCNN()
+
 predictor = dlib.shape_predictor('../basics/shape_predictor_68_face_landmarks.dat')
 
-
 def drawPoints(img, points, color=(0, 255, 0)):
-    for point in points:
-        cv2.circle(img, (int(point[0]), int(point[1])), 2, color, 2)
-        
+    for i in range(0,len(points),1):
+        cv2.circle(img, (int(points[i][0]), int(points[i][1])), 2, color, 2)
+#.........................................
 #3DDFA Params
 def _get_suffix(filename):
     """a.jpg -> jpg"""
@@ -54,6 +69,27 @@ u_base = u[keypoints].reshape(-1, 1)
 w_shp_base = w_shp[keypoints]
 w_exp_base = w_exp[keypoints]
 std_size = 120
+#render
+def _to_ctype(arr):
+    if not arr.flags.c_contiguous:
+        return arr.copy(order='C')
+    return arr
+
+tri = sio.loadmat('../3ddfa/visualize/tri.mat')['tri'] # mx3 for ply export
+triangles = sio.loadmat('../3ddfa/visualize/tri_refine.mat')['tri'] # mx3  for rendering
+triangles = _to_ctype(triangles).astype(np.int32) # for type compatible
+cfg = {
+    'intensity_ambient': 0.3,
+    'color_ambient': (1, 1, 1),
+    'intensity_directional': 0.6,
+    'color_directional': (1, 1, 1),
+    'intensity_specular': 0.1,
+    'specular_exp': 5,
+    'light_pos': (0, 0, 5),
+    'view_pos': (0, 0, 5)
+}
+app = RenderPipeline(**cfg)
+
 #end 
 def _parse_param(param):
     """Work for both numpy and tensor"""
@@ -63,7 +99,7 @@ def _parse_param(param):
     alpha_shp = param[12:52].reshape(-1, 1)
     alpha_exp = param[52:].reshape(-1, 1)
     return p, offset, alpha_shp, alpha_exp
-
+    
 def reconstruct_vertex(param, whitening=True, dense=False, transform=True):
     """Whitening param -> 3d vertex, based on the 3dmm param: u_base, w_shp, w_exp
     dense: if True, return dense vertex, else return 68 sparse landmarks. All dense or sparse vertex is transformed to
@@ -80,7 +116,40 @@ def reconstruct_vertex(param, whitening=True, dense=False, transform=True):
             param = param * param_std + param_mean
 
     p, offset, alpha_shp, alpha_exp = _parse_param(param)
+    if dense:
+        vertex = p @ (u + w_shp @ alpha_shp + w_exp @ alpha_exp).reshape(3, -1, order='F') + offset
 
+        if transform:
+            # transform to image coordinate space
+            vertex[1, :] = std_size + 1 - vertex[1, :]
+    else:
+        """For 68 pts"""
+        vertex = p @ (u_base + w_shp_base @ alpha_shp + w_exp_base @ alpha_exp).reshape(3, -1, order='F') + offset
+
+        if transform:
+            # transform to image coordinate space
+            vertex[1, :] = std_size + 1 - vertex[1, :]
+
+    return vertex
+def reconstruct_vertex2(param,param2, whitening=True, dense=False, transform=True):
+    """Whitening param -> 3d vertex, based on the 3dmm param: u_base, w_shp, w_exp
+    dense: if True, return dense vertex, else return 68 sparse landmarks. All dense or sparse vertex is transformed to
+    image coordinate space, but without alignment caused by face cropping.
+    transform: whether transform to image space
+    """
+    if len(param) == 12:
+        param = np.concatenate((param, [0] * 50))
+    if whitening:
+        if len(param) == 62:
+            param = param * param_std + param_mean
+        else:
+            param = np.concatenate((param[:11], [0], param[11:]))
+            param = param * param_std + param_mean
+
+    p, offset, alpha_shp, alpha_exp = _parse_param(param)
+    p2, offset2, alpha_shp2, alpha_exp2 = _parse_param(param2)
+    alpha_exp=alpha_exp2
+    #alpha_shp=alpha_shp2
     if dense:
         vertex = p @ (u + w_shp @ alpha_shp + w_exp @ alpha_exp).reshape(3, -1, order='F') + offset
 
@@ -109,7 +178,19 @@ def _predict_vertices(param, roi_bbox, dense, transform=True):
     vertex[2, :] *= s
 
     return vertex
+    
+def _predict_vertices2(param,param2, roi_bbox, dense, transform=True):
+    vertex = reconstruct_vertex2(param, param2,dense=dense)
+    sx, sy, ex, ey = roi_bbox
+    scale_x = (ex - sx) / 120
+    scale_y = (ey - sy) / 120
+    vertex[0, :] = vertex[0, :] * scale_x + sx
+    vertex[1, :] = vertex[1, :] * scale_y + sy
 
+    s = (scale_x + scale_y) / 2
+    vertex[2, :] *= s
+
+    return vertex
 
 def predict_68pts(param, roi_box):
     return _predict_vertices(param, roi_box, dense=False)
@@ -117,6 +198,9 @@ def predict_68pts(param, roi_box):
 
 def predict_dense(param, roi_box):
     return _predict_vertices(param, roi_box, dense=True)
+
+def predict_dense2(param,param2, roi_box):
+    return _predict_vertices2(param,param2, roi_box, dense=True)
 
     
 def parse_roi_box_from_landmark(pts):
@@ -135,9 +219,20 @@ def parse_roi_box_from_landmark(pts):
     roi_box[1] = center_y - llength / 2
     roi_box[2] = roi_box[0] + llength
     roi_box[3] = roi_box[1] + llength
-
     return roi_box
-
+def parse_roi_box_from_bbox(bbox):
+    left, top, right, bottom = bbox
+    old_size = (right - left + bottom - top) / 2
+    center_x = right - (right - left) / 2.0
+    center_y = bottom - (bottom - top) / 2.0 + old_size * 0.14
+    size = int(old_size * 1.58)
+    roi_box = [0] * 4
+    roi_box[0] = center_x - size / 2
+    roi_box[1] = center_y - size / 2
+    roi_box[2] = roi_box[0] + size
+    roi_box[3] = roi_box[1] + size
+    return roi_box
+    
 def crop_img(img, roi_box):
     h, w = img.shape[:2]
 
@@ -188,6 +283,91 @@ class NormalizeGjz(object):
     def __call__(self, tensor):
         tensor.sub_(self.mean).div_(self.std)
         return tensor
+        
+def parse_pose(param):
+    param = param * param_std + param_mean
+    Ps = param[:12].reshape(3, -1)  # camera matrix
+    # R = P[:, :3]
+    s, R, t3d = P2sRt(Ps)
+    P = np.concatenate((R, t3d.reshape(3, -1)), axis=1)  # without scale
+    # P = Ps / s
+    pose = matrix2angle(R)  # yaw, pitch, roll
+    # offset = p_[:, -1].reshape(3, 1)
+    return P, pose
+
+
+def matrix2angle(R):
+    ''' compute three Euler angles from a Rotation Matrix. Ref: http://www.gregslabaugh.net/publications/euler.pdf
+    Args:
+        R: (3,3). rotation matrix
+    Returns:
+        x: yaw
+        y: pitch
+        z: roll
+    '''
+    # assert(isRotationMatrix(R))
+
+    if R[2, 0] != 1 or R[2, 0] != -1:
+        x = asin(R[2, 0])
+        y = atan2(R[2, 1] / cos(x), R[2, 2] / cos(x))
+        z = atan2(R[1, 0] / cos(x), R[0, 0] / cos(x))
+
+    else:  # Gimbal lock
+        z = 0  # can be anything
+        if R[2, 0] == -1:
+            x = np.pi / 2
+            y = z + atan2(R[0, 1], R[0, 2])
+        else:
+            x = -np.pi / 2
+            y = -z + atan2(-R[0, 1], -R[0, 2])
+
+    return x, y, z
+
+
+def P2sRt(P):
+    ''' decompositing camera matrix P.
+    Args:
+        P: (3, 4). Affine Camera Matrix.
+    Returns:
+        s: scale factor.
+        R: (3, 3). rotation matrix.
+        t2d: (2,). 2d translation.
+    '''
+    t3d = P[:, 3]
+    R1 = P[0:1, :3]
+    R2 = P[1:2, :3]
+    s = (np.linalg.norm(R1) + np.linalg.norm(R2)) / 2.0
+    r1 = R1 / np.linalg.norm(R1)
+    r2 = R2 / np.linalg.norm(R2)
+    r3 = np.cross(r1, r2)
+
+    R = np.concatenate((r1, r2, r3), 0)
+    return s, R, t3d
+def dump_to_ply(vertex, tri, wfp):
+    header = """ply
+    format ascii 1.0
+    element vertex {}
+    property float x
+    property float y
+    property float z
+    element face {}
+    property list uchar int vertex_indices
+    end_header"""
+
+    n_vertex = vertex.shape[1]
+    n_face = tri.shape[1]
+    header = header.format(n_vertex, n_face)
+
+    with open(wfp, 'w') as f:
+        f.write(header + '\n')
+        for i in range(n_vertex):
+            x, y, z = vertex[:, i]
+            f.write('{:.4f} {:.4f} {:.4f}\n'.format(x, y, z))
+        for i in range(n_face):
+            idx1, idx2, idx3 = tri[:, i]
+            f.write('3 {} {} {}\n'.format(idx1 - 1, idx2 - 1, idx3 - 1))
+    print('Dump tp {}'.format(wfp))
+#endof 3ddfa features
 #..................................................
 #interface
 def init3DDFA():
@@ -207,56 +387,57 @@ def init3DDFA():
     return model,transform
 def get_landmarks(im):
     gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
-    rects = detector(gray, 1)
+    rects = detector1(gray, 1)
     if len(rects) > 1:
         print('more than 1 face detected! %s' % len(rects))
     if len(rects) == 0:
         cv2.imwrite("debug.jpg",gray)
         raise NoFaces
     for idx,rect in enumerate(rects):
-        ldmark=[[p.x, p.y] for p in predictor(im, rect).parts()]
+        ldmark=[[p.x, p.y] for p in predictor(gray, rect).parts()]
         return im,np.matrix(ldmark)
-def get_landmarks3DDFA(img_ori,pts,transform,model,cropImg=True):
+def get_landmarks3DDFA(img_ori,pts):
     if pts==[]:
         # - use landmark for cropping
-        gray = cv2.cvtColor(img_ori, cv2.COLOR_BGR2GRAY)
-        rects = detector(gray, 1)
-        if len(rects)>0:
-            #should be only one face here
-            pts = predictor(img_ori, rects[0]).parts() 
-            pts = np.array([[pt.x, pt.y] for pt in pts]).T
+        #gray = cv2.cvtColor(img_ori, cv2.COLOR_BGR2GRAY)
+        #rects = detector(gray, 1)
+        results=detector.detect_faces(img_ori)
+        if len(results)>0:
+            # should be only one face here
+            # pts = predictor(img_ori, rects[0]).parts() 
+            # pts = np.array([[pt.x, pt.y] for pt in pts]).T
+            bbox= results[0]['box']
+            bbox[2]=bbox[0]+bbox[2]
+            bbox[3]=bbox[1]+bbox[3]
+            
+            roi_box = parse_roi_box_from_bbox(bbox)
         else:
             print("Error couldn't find any face!")
-   
-    roi_box = parse_roi_box_from_landmark(pts)
-    if cropImg:
-        img = crop_img(img_ori, roi_box)
+            raise Exception('No face found')
     else:
-        img = img_ori
+        roi_box = parse_roi_box_from_landmark(pts)
+    img = crop_img(img_ori, roi_box)
     # forward: one step
     img = cv2.resize(img, dsize=(std_size, std_size), interpolation=cv2.INTER_LINEAR)
-    input = transform(img).unsqueeze(0)
+    input = ddfaTrans(img).unsqueeze(0)
     with torch.no_grad():
         input = input.cuda()
-        param = model(input)
+        param = ddfaModel(input)
         param = param.squeeze().cpu().numpy().flatten().astype(np.float32)
     # 68 pts
     pts68 = predict_68pts(param, roi_box)
     # two-step for more accurate bbox to crop face
-    # if args.bbox_init == 'two':
-        # roi_box = parse_roi_box_from_landmark(pts68)
-        # img_step2 = crop_img(img_ori, roi_box)
-        # img_step2 = cv2.resize(img_step2, dsize=(std_size, std_size), interpolation=cv2.INTER_LINEAR)
-        # input = transform(img_step2).unsqueeze(0)
-        # with torch.no_grad():
-            # if args.mode == 'gpu':
-                # input = input.cuda()
-            # param = model(input)
-            # param = param.squeeze().cpu().numpy().flatten().astype(np.float32)
+    roi_box = parse_roi_box_from_landmark(pts68)
+    img_step2 = crop_img(img_ori, roi_box)
+    img_step2 = cv2.resize(img_step2, dsize=(std_size, std_size), interpolation=cv2.INTER_LINEAR)
+    input = ddfaTrans(img_step2).unsqueeze(0)
+    with torch.no_grad():
+        input = input.cuda()
+        param = ddfaModel(input)
+        param = param.squeeze().cpu().numpy().flatten().astype(np.float32)
 
-        # pts68 = predict_68pts(param, roi_box)
-     #trim xyz to xy
-    return img_ori,pts68
+    pts68 = predict_68pts(param, roi_box)
+    return param,pts68
      
 #endof 3DDFA
 
@@ -361,19 +542,10 @@ def correct_colours(im1, im2, landmarks1):
 
     return (im2.astype(np.float64) * im1_blur.astype(np.float64) /
                                                 im2_blur.astype(np.float64))
-def getImageInfo(image_path,faceid):
-    print(image_path)
-    image= cv2.imread(image_path)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    rects = detector(gray, 1)
-    print('%s face detected!' % len(rects))
-    #for (i, rect) in enumerate(rects):
-    #(x, y, w, h) = utils.rect_to_bb(rect)
-    return image,rects[faceid]
- 
-def restore_image(orgImage,prePts, ovimg ,pre_ovPts, idx,transform,model):
-    im1, landmarks1 = get_landmarks3DDFA(orgImage,prePts,transform,model)
-    #im2, landmarks2 = get_landmarks3DDFA(ovimg,pre_ovPts,transform,model)
+
+def restore_image(orgImage,prePts, ovimg ,pre_ovPts,transform,model):
+    im1, landmarks1 = get_landmarks3DDFA(orgImage,prePts)
+    #im2, landmarks2 = get_landmarks3DDFA(ovimg,pre_ovPts)
     im2, landmarks2 = get_landmarks(ovimg)
     #convert to facewarp need
     drawMark1=np.matrix(landmarks1[:-1,:].T.astype(int))
@@ -386,11 +558,102 @@ def restore_image(orgImage,prePts, ovimg ,pre_ovPts, idx,transform,model):
 
     combined_mask = np.max([get_face_mask(im1, drawMark1), warped_mask],axis=0)
     warped_im2 = warp_im(im2, M, im1.shape)
-    out=get_face_mask(im1, drawMark1)*255+im1
-    cv2.imwrite("../temp/mask/maskr_{:04d}.png".format(idx),out)
-    warped_corrected_im2 = correct_colours(im1, warped_im2, drawMark1)
+    #warped_corrected_im2 = correct_colours(im1, warped_im2, drawMark1)
+    warped_corrected_im2 = warped_im2
     output_im = im1 * (1.0 - combined_mask) + warped_corrected_im2 * combined_mask
     return output_im,landmarks1,landmarks2
+    
+#3d faceswap feature
+mean3DShape, blendshapes, mesh, idxs3D, idxs2D = faceswap.load3DFaceModel("../3DDFA/candide.npz")
+projectionModel = faceswap.OrthographicProjectionBlendshapes(blendshapes.shape[0])
+mesh=np.concatenate((mesh, FaceRendering.meshExtra))
+def getFaceTextureCoords(img,model,transform):
+    projectionModel1 = faceswap.OrthographicProjectionBlendshapes(blendshapes.shape[0])
+    # _,keypoints = get_landmarks3DDFA(img,[],False)
+    # keypoints=keypoints[:-1,:]
+    _, keypoints = get_landmarks(img)
+    keypoints = np.array(keypoints.T)
+    modelParams = projectionModel1.getInitialParameters(mean3DShape[:, idxs3D], keypoints[:, idxs2D])
+    modelParams = faceswap.GaussNewton(modelParams, projectionModel1.residual, projectionModel1.jacobian, ([mean3DShape[:, idxs3D], blendshapes[:, :, idxs3D]], keypoints[:, idxs2D]), verbose=0)
+    textureCoords = projectionModel1.fun([mean3DShape, blendshapes], modelParams)
+    return textureCoords
+    
+def init3DFaceSwap(cameraImg,textureImg,model,transform):
+    textureCoords = getFaceTextureCoords(textureImg,model,transform)
+    renderer = FaceRendering.FaceRenderer(cameraImg, textureImg, textureCoords, mesh)
+    return renderer
 
-#...........................................
+def restore_image3d(orgImage,prePts, ovimg ,pre_ovPts,transform,model,renderer,fake_lmk,drawOverlay=True):
+    _, landmarks1 = get_landmarks3DDFA(orgImage,prePts)
+    #_, landmarks2 = get_landmarks3DDFA(ovimg,[])
+    _, landmarks2 = get_landmarks(ovimg)
+    #convert to facewarp need
+    drawMark1=landmarks1[:-1,:]
+    #drawMark2=landmarks2[:-1,:]
+    #landmarks2=fake_lmk
+    drawMark2 = np.array(landmarks2.T) #when use get_landmarks
+    #overlay parameter
+    modelParams_o = projectionModel.getInitialParameters(mean3DShape[:, idxs3D], drawMark2[:, idxs2D])
+    modelParams_o =faceswap.GaussNewton(modelParams_o, projectionModel.residual, projectionModel.jacobian, ([mean3DShape[:, idxs3D], blendshapes[:, :, idxs3D]], drawMark2[:, idxs2D]), verbose=0)
+
+    #3D model parameter initialization
+    modelParams = projectionModel.getInitialParameters(mean3DShape[:, idxs3D], drawMark1[:, idxs2D])
+    #3D model parameter optimization
+    modelParams = faceswap.GaussNewton(modelParams, projectionModel.residual, projectionModel.jacobian, ([mean3DShape[:, idxs3D], blendshapes[:, :, idxs3D]], drawMark1[:, idxs2D]), verbose=0)
+    #rendering the model to an image
+    #modelParams_o[6:9]-=0.2
+    modelParams[6:9]=modelParams_o[6:9]*0.4 # ignore the mouth blendshapes params
+    shape3D = faceswap.getShape3D(mean3DShape, blendshapes, modelParams)
+    #still image under
+    # shape3DStill=faceswap.getShape3DStill(mean3DShape,modelParams)
+    # renderedImg = renderer.render(shape3DStill)
+    # mask = np.copy(renderedImg[:, :, 0])
+    # renderedImg = ImageProcessing.colorTransfer(orgImage, renderedImg, mask)
+    # renderedImg = ImageProcessing.blendImages(renderedImg, orgImage, mask)
+    
+    #render talking face
+    ovimg=cv2.cvtColor(ovimg,cv2.COLOR_BGR2RGB)
+    renderer.setFaceTexture(ovimg)
+    renderedImg_o = renderer.render(shape3D)
+    #blending of the rendered face with the image
+    mask = np.copy(renderedImg_o[:, :, 0])
+    renderedImg_o = ImageProcessing.colorTransfer(orgImage, renderedImg_o, mask)
+    output_im = ImageProcessing.blendImages(renderedImg_o, orgImage, mask)
+    if drawOverlay:
+        #drawPoints(output_im, drawMark1.T)
+        drawing.drawProjectedShape(output_im, [mean3DShape, blendshapes], projectionModel, mesh, modelParams, False)
+
+    return output_im,landmarks1,landmarks2
+    
+def get_colors(image, vertices):
+    '''
+    Args:
+        pos: the 3D position map. shape = (256, 256, 3).
+    Returns:
+        colors: the corresponding colors of vertices. shape = (num of points, 3). n is 45128 here.
+    '''
+    [h, w, _] = image.shape
+    vertices[:,0] = np.minimum(np.maximum(vertices[:,0], 0), w - 1)  # x
+    vertices[:,1] = np.minimum(np.maximum(vertices[:,1], 0), h - 1)  # y
+    ind = np.round(vertices).astype(np.int32)
+    colors = image[ind[:,1], ind[:,0], :] # n x 3
+    return colors
+def restore_image3ddfa(orgImage,prePts, ovimg ,img,colors=[],drawOverlay=True):
+    param, landmarks1   = get_landmarks3DDFA(orgImage,prePts)
+    param2,landmarks2   = get_landmarks3DDFA(ovimg,[])
+    #_, landmarks2 = get_landmarks(ovimg)
+    #convert to facewarp need
+    roi_box = parse_roi_box_from_landmark(landmarks1)
+    P, pose = parse_pose(param)
+    #vertices = predict_dense(param, roi_box)
+    vertices = predict_dense2(param,param2, roi_box)
+    if drawOverlay:
+        #dump_to_ply(vertices, tri, 'test.ply')
+        output_im=255-orgImage
+        vertices = _to_ctype(vertices.T)
+        if colors==[]:
+            colors=get_colors(img,vertices) /255.0
+        output_im = app(vertices, triangles, output_im,colors)
+    return colors,output_im,landmarks1,landmarks2
+ddfaModel,ddfaTrans=init3DDFA()
 #...........................................

@@ -98,31 +98,36 @@ def normLmarks(lmarks):
         pred_seq.append(predicted[0, :])
     return np.array(pred_seq), np.array(norm_list), 1
     
-def crop_image2(image,rect):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    shape = ddfa.predictor(gray, rect)
-    shape = utils.shape_to_np(shape)
-    (x, y, w, h) = utils.rect_to_bb(rect)
+def crop_image2(image):
+
+    #gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _,shape=ddfa.get_landmarks3DDFA(image,[])
+    rect=list(np.int_(ddfa.parse_roi_box_from_landmark(shape)))
+    shape=shape[:-1,:].T
+    #shape = ddfa.predictor(gray, rect)
+    # shape = utils.shape_to_np(shape)
+    # (x, y, w, h) = utils.rect_to_bb(rect)
+    x=int(rect[0])
+    y=int(rect[1])
+    w=int(rect[2]-rect[0])
+    h=int(rect[3]-rect[1])
     center_x = x + int(0.5 * w)
     center_y = y + int(0.5 * h)
     r = int(0.64 * h)
-    new_x = center_x - r
-    new_y = center_y - r
+    new_x = int(center_x - r)
+    new_y = int(center_y - r)
     roi = image[new_y:new_y + 2 * r, new_x:new_x + 2 * r]
     roi = cv2.resize(roi, (163,163), interpolation = cv2.INTER_AREA)
     scale =  163. / (2 * r)
-
-    shape = ((shape - np.array([new_x,new_y])) * scale)
-
+    shape = (shape - np.array([new_x,new_y])) * scale
     return roi, shape
         
-def generator_demo_example_lips(img_path,image,rect):
+def generator_demo_example_lips(img_path,image):
     name = img_path.split('/')[-1]
     name = name.split('.')[-1]
     landmark_path = os.path.join('../image/', name+'.npy') 
-    region_path = os.path.join('../image/', name+ '_region.jpg') 
-    roi, landmark= crop_image2(image,rect)
-
+    region_path = os.path.join('../image/', name+ '_region.jpg')
+    roi, landmark= crop_image2(image)
     if  np.sum(landmark[37:39,1] - landmark[40:42,1]) < -9:
 
         # pts2 = np.float32(np.array([template[36],template[45],template[30]]))
@@ -145,12 +150,20 @@ def generator_demo_example_lips(img_path,image,rect):
     dst = dst[1:129,1:129,:]
     cv2.imwrite(region_path, dst)
 
-    gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
+    #gray = cv2.cvtColor(dst, cv2.COLOR_BGR2GRAY)
 
     # detect faces in the grayscale image
-    #rects = detector(gray, 1)
-    shape = ddfa.predictor(gray, rect)
-    shape = utils.shape_to_np(shape)
+    #rects = ddfa.detector1(gray, 1)
+    results=ddfa.detector.detect_faces(dst)
+
+    if len(results)==0:
+        cv2.imwrite("Debug.jpg",dst)
+        raise Exception('No face found')
+    #rect= results[0]['box']
+    #shape = ddfa.predictor(gray, rects[0])
+    #shape = utils.shape_to_np(shape)
+    _,shape = ddfa.get_landmarks3DDFA(dst,[])
+    shape=shape[:-1,:].reshape(68,2)
     shape, _ ,_ = normLmarks(shape)
     np.save(landmark_path, shape)
     lmark= shape.reshape(68,2)
@@ -158,16 +171,16 @@ def generator_demo_example_lips(img_path,image,rect):
     
     utils.plot_flmarks(lmark, name, (-0.2, 0.2), (-0.2, 0.2), 'x', 'y', figsize=(10, 10))
     return dst, lmark
-    
+
 def test():
     os.environ["CUDA_VISIBLE_DEVICES"] = config.device_ids
     if os.path.exists('../temp'):
         try:
             shutil.rmtree('../temp')
-            while os.path.exists('../temp/img'):
+            while os.path.exists('../temp'):
                 time.sleep(1)
         except:
-            while os.path.exists('../temp/img'):
+            while os.path.exists('../temp'):
                 time.sleep(1)
     try:
         os.mkdir('../temp')
@@ -176,7 +189,6 @@ def test():
     os.mkdir('../temp/img')
     os.mkdir('../temp/motion')
     os.mkdir('../temp/attention')
-    os.mkdir('../temp/mask')
     os.mkdir('../temp/lmk')
     os.mkdir('../temp/head')
     os.mkdir('../temp/headlmk')
@@ -201,12 +213,16 @@ def test():
     test_file = config.in_file
     orgPath = config.person.format(0)
     #init ddfa and more
-    ddfaModel,ddfaTrans=ddfa.init3DDFA()
-    orgImage, rect = ddfa.getImageInfo(orgPath,config.faceid)
-    prePts=np.array([[p.x, p.y] for p in ddfa.predictor(orgImage, rect).parts()]).T
+    renderer=None
+    orgImage=cv2.imread(orgPath)
+    print(orgPath)
+    _,prePts=ddfa.get_landmarks3DDFA(orgImage,[])
+    rect=ddfa.parse_roi_box_from_landmark(prePts)
+    prePts=prePts[:-1,:]
+    #prePts=np.array([[p.x, p.y] for p in ddfa.predictor(orgImage, rect).parts()]).T
     pre_ovPts=[]
     #............
-    example_image, example_landmark = generator_demo_example_lips( orgPath,orgImage,rect)
+    example_image, example_landmark = generator_demo_example_lips( orgPath,orgImage)
     
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -260,7 +276,10 @@ def test():
         #np.save( os.path.join( config.sample_dir,  'obama_fake.npy'), fake_lmark)
         fake_lmark = np.reshape(fake_lmark, (fake_lmark.shape[1], 68, 2))
         #utils.write_video_wpts_wsound(fake_lmark, sound, 44100, config.sample_dir, 'fake', [-1.0, 1.0], [-1.0, 1.0])
-        for indx in range(fake_ims.size(1)):
+        indx=0
+        vcolor=[]
+        while os.path.exists(config.person.format(indx)) and fake_ims.size(1)>indx:
+        #for indx in range(fake_ims.size(1)):
             fake_im = fake_ims[:,indx]
             fake_store = fake_im.permute(0,2,3,1).data.cpu().numpy()[0]
             seqPath=config.person.format(indx)
@@ -272,16 +291,26 @@ def test():
             cv2.normalize(headimg, headimg, 0, 255, cv2.NORM_MINMAX)
             headimg = headimg.astype('uint8')
             
-            fake_store,prePts,pre_ovPts = ddfa.restore_image(newImage,prePts,headimg,pre_ovPts,indx,ddfaTrans,ddfaModel)
+            #fake_store,prePts,pre_ovPts = ddfa.restore_image(newImage,prePts,headimg,pre_ovPts,ddfaTrans,ddfaModel)
+            # if renderer==None:
+                # renderer=ddfa.init3DFaceSwap(newImage,headimg,ddfaModel,ddfaTrans)
+            #fake_store,prePts,pre_ovPts = ddfa.restore_image3d(newImage,prePts,headimg,pre_ovPts,ddfaTrans,ddfaModel,renderer,fake_lmark[indx])
+            path="e:/temp/test/yanglan/yanglan_{:04d}.png".format(indx)
+            
+            if not os.path.exists(path):
+                path="e:/temp/test/yanglan/yanglan_{:04d}.png".format(0)
+            headimg=cv2.imread(path)
+            headimg=cv2.cvtColor(headimg,cv2.COLOR_BGR2RGB)
+            
+            vcolor,fake_store,prePts,pre_ovPts = ddfa.restore_image3ddfa(newImage,prePts,headimg,orgImage,vcolor)
             headimg=cv2.cvtColor(headimg,cv2.COLOR_RGB2BGR)
             cv2.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'head') ,indx ), headimg)
-            ddfa.drawPoints(headimg,pre_ovPts.tolist())
-            #ddfa.drawPoints(headimg,pre_ovPts.T)
+            #ddfa.drawPoints(headimg,pre_ovPts.tolist())
+            ddfa.drawPoints(headimg,pre_ovPts.T)
             cv2.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'headlmk') ,indx ), headimg)
-            
             cv2.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'img') ,indx ), fake_store)
             ddfa.drawPoints(newImage,prePts.T)
-            cv2.imwrite("{}/{:05d}.jpg".format(os.path.join('../', 'temp', 'lmk') ,indx ),newImage)
+            cv2.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'lmk') ,indx ),newImage)
             m = ms[:,indx]
             att = atts[:,indx]
             m = m.permute(0,2,3,1).data.cpu().numpy()[0]
@@ -289,7 +318,7 @@ def test():
 
             scipy.misc.imsave("{}/{:05d}.png".format(os.path.join('../', 'temp', 'motion' ) ,indx ), m)
             scipy.misc.imsave("{}/{:05d}.png".format(os.path.join('../', 'temp', 'attention') ,indx ), att)
-
+            indx+=1
         print ( 'In total, generate {:d} images, cost time: {:03f} seconds'.format(fake_ims.size(1), time.time() - t) )
 
         video_name = os.path.join(config.sample_dir , 'results.mp4')

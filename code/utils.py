@@ -84,7 +84,6 @@ def normLmarks(lmarks):
     tmp = copy.deepcopy(MSK)
     tmp[:, 48*2:] += np.dot(mouthParams, SK)[0, :, 48*2:]
     open_mouth_params = np.reshape(np.dot(S, tmp[0, :] - MSK[0, :]), (1, 100))
-    print (lmarks.shape)
     for i in range(lmarks.shape[0]):
         mtx1, mtx2, disparity = procrustes(ms_img, lmarks[i, :, :])
         mtx1 = np.reshape(mtx1, [1, 136])
@@ -346,7 +345,7 @@ def image_to_video(sample_dir = None, video_name = None):
 
 def add_audio(video_name=None, audio_dir = None):
 
-    command = 'C:/cinetec/Saturn_2.5/bin/ffmpeg/ffmpeg.exe -i ' + video_name  + ' -i ' + audio_dir + ' -vcodec copy  -acodec copy -y  ' + video_name.replace('.mp4','_a.mov')
+    command = 'C:/cinetec/Saturn_2.5/bin/ffmpeg/ffmpeg.exe -i ' + video_name  + ' -i ' + audio_dir + ' -vcodec copy  -acodec copy -y -shortest ' + video_name.replace('.mp4','_a.mov')
     #ffmpeg -i /mnt/disk1/dat/lchen63/lrw/demo/new/resutls/results.mp4 -i /mnt/disk1/dat/lchen63/lrw/demo/new/audio/obama.wav -codec copy -c:v libx264 -c:a aac -b:a 192k  -shortest -y /mnt/disk1/dat/lchen63/lrw/demo/new/resutls/results.mov
     # ffmpeg -i gan_r_high_fake.mp4 -i /mnt/disk1/dat/lchen63/lrw/demo/audio/obama.wav -vcodec copy  -acodec copy -y   gan_r_high_fake.mov
 

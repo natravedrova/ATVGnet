@@ -1,0 +1,1 @@
+py -3 demo_video.py --p=e:/temp/test/yanglan/yanglan_{:04d}.png --device_ids=0
