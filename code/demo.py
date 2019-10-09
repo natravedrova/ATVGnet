@@ -3,6 +3,7 @@ import os
 import glob
 import time
 import numpy as np
+import imageio
 import torch
 import torch.utils
 import torch.nn as nn
@@ -458,14 +459,14 @@ def test():
                     fake_store = restore_image(orgImage,rect,fake_store,indx)
                 cv2.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'img') ,indx ), fake_store)
             else:
-                scipy.misc.imsave("{}/{:05d}.png".format(os.path.join('../', 'temp', 'img') ,indx ), fake_store)
+                imageio.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'img') ,indx ), fake_store)
             m = ms[:,indx]
             att = atts[:,indx]
             m = m.permute(0,2,3,1).data.cpu().numpy()[0]
             att = att.data.cpu().numpy()[0,0]
 
-            scipy.misc.imsave("{}/{:05d}.png".format(os.path.join('../', 'temp', 'motion' ) ,indx ), m)
-            scipy.misc.imsave("{}/{:05d}.png".format(os.path.join('../', 'temp', 'attention') ,indx ), att)
+            imageio.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'motion' ) ,indx ), m)
+            imageio.imwrite("{}/{:05d}.png".format(os.path.join('../', 'temp', 'attention') ,indx ), att)
 
         print ( 'In total, generate {:d} images, cost time: {:03f} seconds'.format(fake_ims.size(1), time.time() - t) )
             
