@@ -134,7 +134,7 @@ def write_video_wpts_wsound_unnorm(frames, sound, fs, path, fname, xLim, yLim):
                 cnt+=1
             writer.grab_frame()
 
-    cmd = 'C:/cinetec/Saturn_2.5/bin/ffmpeg/ffmpeg.exe -i '+os.path.join(path, fname)+'.mp4 -i '+os.path.join(path, fname)+'.wav -c:v copy -c:a aac -strict experimental '+os.path.join(path, fname)+'_ws.mp4'
+    cmd = 'ffmpeg -i '+os.path.join(path, fname)+'.mp4 -i '+os.path.join(path, fname)+'.wav -c:v copy -c:a aac -strict experimental '+os.path.join(path, fname)+'_ws.mp4'
     subprocess.call(cmd, shell=True) 
     print('Muxing Done')
 
@@ -186,7 +186,7 @@ def write_video_wpts_wsound(frames, sound , fs, path, fname, xLim, yLim):
                 cnt+=1
             writer.grab_frame()
 
-    cmd = 'C:/cinetec/Saturn_2.5/bin/ffmpeg/ffmpeg.exe -y -i '+os.path.join(path, fname)+'.mp4 -i '+os.path.join(path, fname)+'.wav -c:v copy -c:a aac -strict experimental '+os.path.join(path, fname)+'_ws.mp4'
+    cmd = 'ffmpeg -y -i '+os.path.join(path, fname)+'.mp4 -i '+os.path.join(path, fname)+'.wav -c:v copy -c:a aac -strict experimental '+os.path.join(path, fname)+'_ws.mp4'
     subprocess.call(cmd, shell=True) 
     print('Muxing Done')
 
@@ -338,14 +338,14 @@ def crop_image(image_path, detector, shape, predictor):
       
 def image_to_video(sample_dir = None, video_name = None):
     
-    command = 'C:/cinetec/Saturn_2.5/bin/ffmpeg/ffmpeg.exe -framerate 25  -i ' + sample_dir +  '/%05d.png -c:v libx264 -y -vf format=yuv420p ' + video_name 
+    command = 'ffmpeg -framerate 25  -i ' + sample_dir +  '/%05d.png -c:v libx264 -y -vf format=yuv420p ' + video_name 
     #ffmpeg -framerate 25 -i real_%d.png -c:v libx264 -y -vf format=yuv420p real.mp4
     print (command)
     os.system(command)
 
 def add_audio(video_name=None, audio_dir = None):
 
-    command = 'C:/cinetec/Saturn_2.5/bin/ffmpeg/ffmpeg.exe -i ' + video_name  + ' -i ' + audio_dir + ' -vcodec copy  -acodec copy -y -shortest ' + video_name.replace('.mp4','_a.mov')
+    command = 'ffmpeg -i ' + video_name  + ' -i ' + audio_dir + ' -vcodec copy  -acodec copy -y -shortest ' + video_name.replace('.mp4','_a.mov')
     #ffmpeg -i /mnt/disk1/dat/lchen63/lrw/demo/new/resutls/results.mp4 -i /mnt/disk1/dat/lchen63/lrw/demo/new/audio/obama.wav -codec copy -c:v libx264 -c:a aac -b:a 192k  -shortest -y /mnt/disk1/dat/lchen63/lrw/demo/new/resutls/results.mov
     # ffmpeg -i gan_r_high_fake.mp4 -i /mnt/disk1/dat/lchen63/lrw/demo/audio/obama.wav -vcodec copy  -acodec copy -y   gan_r_high_fake.mov
 
@@ -647,7 +647,7 @@ class facePainter():
                 plt.clf()
                 # plt.close()
 
-        cmd = 'C:/cinetec/Saturn_2.5/bin/ffmpeg/ffmpeg.exe -i '+os.path.join(path, fname)+'.mp4 -i '+os.path.join(path, fname)+'.wav -c:v copy -c:a aac -strict experimental '+os.path.join(path, fname)+'_.mp4'
+        cmd = 'ffmpeg -i '+os.path.join(path, fname)+'.mp4 -i '+os.path.join(path, fname)+'.wav -c:v copy -c:a aac -strict experimental '+os.path.join(path, fname)+'_.mp4'
         subprocess.call(cmd, shell=True) 
         print('Muxing Done')
 
